@@ -63,10 +63,21 @@ def get_video_date(filepath: Path) -> datetime | None:
     return None
 
 
+def get_creation_date(filepath: Path) -> datetime | None:
+    """Read the filesystem creation date (macOS birthtime via st_birthtime)."""
+    try:
+        birthtime = filepath.stat().st_birthtime
+        return datetime.fromtimestamp(birthtime)
+    except AttributeError:
+        # st_birthtime is macOS-only; not available on Linux
+        return None
+
+
 def get_file_date(filepath: Path) -> datetime:
     return (
         get_exif_date(filepath)
         or get_video_date(filepath)
+        or get_creation_date(filepath)
         or datetime.fromtimestamp(filepath.stat().st_mtime)
     )
 
