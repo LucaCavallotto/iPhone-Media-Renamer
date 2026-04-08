@@ -5,6 +5,7 @@ Renames photos and videos from an iPhone folder using their creation date and ti
 """
 
 import sys
+import re
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -109,29 +110,58 @@ def build_new_name(filepath: Path, date: datetime, taken: set[str]) -> str:
     raise RuntimeError(f"Could not generate a unique name for {filepath.name}")
 
 
+# ── Already-renamed detection ──────────────────────────────────────────────────
+
+# Matches filenames produced by this script: 2024-07-15_14-32-05.jpg
+#                                         or 2024-07-15_14-32-05_b.jpg
+RENAMED_PATTERN = re.compile(
+    r'^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(_[a-z]{1,2})?$'
+)
+
+def is_already_renamed(filepath: Path) -> bool:
+    return bool(RENAMED_PATTERN.match(filepath.stem))
+
+
+def count_distinct_groups(files: list[Path]) -> int:
+    """
+    Count distinct images by grouping files that share the same stem
+    (e.g. IMG_1234.JPG + IMG_1234.MOV = 1 distinct image).
+    """
+    return len({f.stem.upper() for f in files})
+
+
 # ── File collection ────────────────────────────────────────────────────────────
 
-def collect_media_files(folder: Path) -> list[Path]:
-    return sorted(
-        f for f in folder.iterdir()
-        if f.is_file() and f.suffix.lower() in ALL_EXTENSIONS
-    )
+def collect_media_files(folder: Path) -> tuple[list[Path], list[Path]]:
+    """
+    Returns (to_rename, already_renamed) — two separate lists.
+    Files matching the renamed pattern are skipped.
+    """
+    to_rename: list[Path] = []
+    already:   list[Path] = []
+    for f in sorted(folder.iterdir()):
+        if f.is_file() and f.suffix.lower() in ALL_EXTENSIONS:
+            if is_already_renamed(f):
+                already.append(f)
+            else:
+                to_rename.append(f)
+    return to_rename, already
 
 
 # ── I/O helpers ────────────────────────────────────────────────────────────────
 
-def ask_folder() -> tuple[Path, list[Path]]:
+def ask_folder() -> tuple[Path, list[Path], list[Path]]:
     while True:
         raw = input("\nFolder path: ").strip().strip('"').strip("'")
         folder = Path(raw)
         if not folder.exists() or not folder.is_dir():
             print("  Invalid path. Try again.")
             continue
-        files = collect_media_files(folder)
-        if not files:
+        to_rename, already = collect_media_files(folder)
+        if not to_rename and not already:
             print("  No media files found (JPG, HEIC, MOV, MP4 …). Try another folder.")
             continue
-        return folder, files
+        return folder, to_rename, already
 
 
 def ask_yes_no(prompt: str) -> bool:
@@ -196,13 +226,25 @@ def main():
     if not HACHOIR_AVAILABLE:
         print("  ! hachoir not installed — video metadata unavailable   (pip install hachoir)")
 
-    folder, files = ask_folder()
+    folder, files, already = ask_folder()
 
-    photos = sum(1 for f in files if f.suffix.lower() in PHOTO_EXTENSIONS)
-    videos = sum(1 for f in files if f.suffix.lower() in VIDEO_EXTENSIONS)
-    print(f"\n  {len(files)} files  ({photos} photos, {videos} videos)\n")
+    # ── Summary ────────────────────────────────────────────────────────────────
+    photos   = sum(1 for f in files if f.suffix.lower() in PHOTO_EXTENSIONS)
+    videos   = sum(1 for f in files if f.suffix.lower() in VIDEO_EXTENSIONS)
+    distinct = count_distinct_groups(files)
+
+    if already:
+        print(f"\n  {len(already)} file(s) already renamed — skipped.")
+
+    if not files:
+        print("  Nothing left to rename.")
+        sys.exit(0)
+
+    print()
     for f in files:
         print(f"    {f.name}")
+
+    print(f"\n  {len(files)} files to rename  ({photos} photos, {videos} videos, {distinct} distinct images)")
 
     if not ask_yes_no(f"\nRename {len(files)} files? [y/n]: "):
         print("  Cancelled.")
@@ -214,6 +256,7 @@ def main():
         sys.exit(0)
 
     print(f"\n  Check: {folder}")
+    print(f"  {len(log)} renamed  ({photos} photos, {videos} videos, {distinct} distinct images)\n")
 
     if ask_yes_no("  Happy with the result? [y/n]: "):
         sys.exit(0)
