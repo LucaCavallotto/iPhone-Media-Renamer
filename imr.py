@@ -2,6 +2,10 @@
 """
 iPhone Media Renamer
 Renames photos and videos from an iPhone folder using their creation date and time.
+
+Usage:
+  python imr.py                   # will prompt for folder
+  python imr.py /path/to/folder   # folder passed directly
 """
 
 import sys
@@ -150,23 +154,44 @@ def collect_media_files(folder: Path) -> tuple[list[Path], list[Path]]:
 
 # ── I/O helpers ────────────────────────────────────────────────────────────────
 
+W = 60  # header width
+
+def header(title: str) -> None:
+    print(f"\n{'─' * W}")
+    print(f"  {title}")
+    print(f"{'─' * W}")
+
+def subheader(title: str) -> None:
+    print(f"\n  {title}")
+    print(f"  {'·' * (W - 2)}")
+
+def validate_folder(path: str) -> tuple[Path, list[Path], list[Path]] | None:
+    """Validate a path string and return (folder, to_rename, already) or None."""
+    folder = Path(path.strip().strip('"').strip("'"))
+    if not folder.exists() or not folder.is_dir():
+        return None
+    to_rename, already = collect_media_files(folder)
+    if not to_rename and not already:
+        return None
+    return folder, to_rename, already
+
 def ask_folder() -> tuple[Path, list[Path], list[Path]]:
     while True:
-        raw = input("\nFolder path: ").strip().strip('"').strip("'")
-        folder = Path(raw)
-        if not folder.exists() or not folder.is_dir():
-            print("  Invalid path. Try again.")
+        raw = input("\n  Folder path: ").strip()
+        result = validate_folder(raw)
+        if result is None:
+            folder = Path(raw.strip().strip('"').strip("'"))
+            if not folder.exists() or not folder.is_dir():
+                print("  ! Invalid path. Try again.")
+            else:
+                print("  ! No media files found (JPG, HEIC, MOV, MP4 …). Try another folder.")
             continue
-        to_rename, already = collect_media_files(folder)
-        if not to_rename and not already:
-            print("  No media files found (JPG, HEIC, MOV, MP4 …). Try another folder.")
-            continue
-        return folder, to_rename, already
+        return result
 
 
 def ask_yes_no(prompt: str) -> bool:
     while True:
-        a = input(prompt).strip().lower()
+        a = input(f"  {prompt} ").strip().lower()
         if a in ('y', 'yes'): return True
         if a in ('n', 'no'):  return False
         print("  Answer y or n.")
@@ -180,7 +205,7 @@ def rename_files(files: list[Path]) -> list[tuple[Path, Path]]:
     log: list[tuple[Path, Path]] = []
     errors = 0
 
-    print()
+    subheader("Renaming")
     for filepath in files:
         date     = get_file_date(filepath)
         new_name = build_new_name(filepath, date, taken - {filepath.name})
@@ -201,10 +226,10 @@ def rename_files(files: list[Path]) -> list[tuple[Path, Path]]:
 
 def restore_files(log: list[tuple[Path, Path]]) -> None:
     errors = 0
-    print()
+    subheader("Restoring")
     for current, original in log:
         if not current.exists():
-            print(f"  {current.name}  not found, skipped.")
+            print(f"  {current.name:<45}  not found, skipped.")
             errors += 1
             continue
         try:
@@ -219,35 +244,51 @@ def restore_files(log: list[tuple[Path, Path]]) -> None:
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
-    print("iPhone Media Renamer")
+    header("iPhone Media Renamer")
 
     if not PIL_AVAILABLE:
         print("  ! Pillow not installed — photo EXIF dates unavailable  (pip install Pillow)")
     if not HACHOIR_AVAILABLE:
         print("  ! hachoir not installed — video metadata unavailable   (pip install hachoir)")
 
-    folder, files, already = ask_folder()
+    # Accept folder from command-line argument or prompt
+    if len(sys.argv) > 1:
+        result = validate_folder(sys.argv[1])
+        if result is None:
+            folder_path = Path(sys.argv[1])
+            if not folder_path.exists() or not folder_path.is_dir():
+                print(f"\n  ! Invalid path: {sys.argv[1]}")
+            else:
+                print(f"\n  ! No media files found in: {sys.argv[1]}")
+            print("  Falling back to manual input.")
+            folder, files, already = ask_folder()
+        else:
+            folder, files, already = result
+            print(f"\n  Folder: {folder}")
+    else:
+        folder, files, already = ask_folder()
 
-    # ── Summary ────────────────────────────────────────────────────────────────
+    # ── Pre-rename summary ─────────────────────────────────────────────────────
     photos   = sum(1 for f in files if f.suffix.lower() in PHOTO_EXTENSIONS)
     videos   = sum(1 for f in files if f.suffix.lower() in VIDEO_EXTENSIONS)
     distinct = count_distinct_groups(files)
 
     if already:
-        print(f"\n  {len(already)} file(s) already renamed — skipped.")
+        subheader(f"Already renamed — skipped ({len(already)} files)")
+        for f in already:
+            print(f"  {f.name}")
 
     if not files:
-        print("  Nothing left to rename.")
+        print("\n  Nothing left to rename.")
         sys.exit(0)
 
-    print()
+    subheader(f"Files to rename ({len(files)} total  ·  {photos} photos  ·  {videos} videos  ·  {distinct} distinct)")
     for f in files:
-        print(f"    {f.name}")
+        print(f"  {f.name}")
 
-    print(f"\n  {len(files)} files to rename  ({photos} photos, {videos} videos, {distinct} distinct images)")
-
-    if not ask_yes_no(f"\nRename {len(files)} files? [y/n]: "):
-        print("  Cancelled.")
+    print()
+    if not ask_yes_no(f"Rename {len(files)} files? [y/n]:"):
+        print("\n  Cancelled. Nothing was changed.")
         sys.exit(0)
 
     log = rename_files(files)
@@ -255,19 +296,24 @@ def main():
     if not log:
         sys.exit(0)
 
-    print(f"\n  Check: {folder}")
-    print(f"  {len(log)} renamed  ({photos} photos, {videos} videos, {distinct} distinct images)\n")
+    # ── Post-rename summary ────────────────────────────────────────────────────
+    header("Done")
+    print(f"  Folder   {folder}")
+    print(f"  Renamed  {len(log)} files  ·  {photos} photos  ·  {videos} videos  ·  {distinct} distinct")
 
-    if ask_yes_no("  Happy with the result? [y/n]: "):
+    print()
+    if ask_yes_no("Happy with the result? [y/n]:"):
         sys.exit(0)
     else:
-        print("  Restoring…")
         restore_files(log)
+        print()
+        header("Restored")
+        print(f"  All {len(log)} files have been restored to their original names.")
 
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\n  Interrupted.")
+        print("\n\n  Interrupted.")
         sys.exit(0)
